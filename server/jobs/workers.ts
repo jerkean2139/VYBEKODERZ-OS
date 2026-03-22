@@ -11,6 +11,11 @@ import { addNotification } from '../notifications/feed';
 // ============================================================
 
 export async function registerWorkers(boss: PgBoss) {
+  // Create queues before registering workers
+  for (const queueName of Object.values(JOB_TYPES)) {
+    await boss.createQueue(queueName);
+  }
+
   // ---- Route Task ----
   await boss.work<RouteTaskJob>(JOB_TYPES.ROUTE_TASK, { teamSize: 5 }, async (job) => {
     const { taskId, input, tenantId } = job.data;

@@ -439,6 +439,11 @@ Maximum 3 recommendations. Return [] if spawning isn't warranted.`,
 // ============================================================
 
 export async function registerAutonomyJobs(boss: PgBoss) {
+  // Create queues before scheduling (pg-boss requires queues to exist first)
+  for (const queueName of Object.values(AUTONOMY_JOBS)) {
+    await boss.createQueue(queueName);
+  }
+
   // Memory Consolidation: daily 2AM — ESSENTIAL (runs when throttled)
   await boss.schedule(AUTONOMY_JOBS.MEMORY_CONSOLIDATION, '0 2 * * *', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.MEMORY_CONSOLIDATION, async (job) => {
