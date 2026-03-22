@@ -22,7 +22,7 @@ export function getGoogleConfig(): OAuthConfig {
   return {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
-    redirectUri: `${process.env.APP_URL || 'http://localhost:5173'}/auth/google/callback`,
+    redirectUri: `${process.env.API_URL || 'http://localhost:3001'}/api/auth/google/callback`,
     scope: [
       'openid',
       'email',
@@ -39,7 +39,7 @@ export function getMicrosoftConfig(): OAuthConfig {
   return {
     clientId: process.env.MICROSOFT_CLIENT_ID || '',
     clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
-    redirectUri: `${process.env.APP_URL || 'http://localhost:5173'}/auth/microsoft/callback`,
+    redirectUri: `${process.env.API_URL || 'http://localhost:3001'}/api/auth/microsoft/callback`,
     scope: [
       'openid',
       'email',

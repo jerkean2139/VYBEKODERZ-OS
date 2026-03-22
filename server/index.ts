@@ -6,7 +6,7 @@ import { createTask, routeTaskToAgent, getAllTasks, getTask, updateTaskStatus, s
 import { agents } from './agents';
 import { signToken, type JWTPayload } from './auth/jwt';
 import { getGoogleAuthUrl, getMicrosoftAuthUrl } from './auth/oauth';
-import { authenticate } from './auth/middleware';
+import { authenticate, authorize, requireRole } from './auth/middleware';
 import {
   storeEpisodic, storeSemantic, storeProcedural, storeRelational, storePredictive,
   queryMemories, getMemoryStats, seedDemoMemories, type MemoryType,
@@ -136,6 +136,244 @@ app.post('/api/auth/demo', (req, res) => {
 // Verify current token
 app.get('/api/auth/me', authenticate, (req, res) => {
   res.json(req.auth);
+});
+
+// ============================================================
+// OAUTH CALLBACKS — full code exchange → user upsert → JWT
+// ============================================================
+
+import { exchangeGoogleCode, exchangeMicrosoftCode, type OAuthUserProfile } from './auth/oauth';
+import {
+  getUserByEmail, getUserByGoogleId, getUserByMicrosoftId,
+  createUser, updateUserLogin, getTenantBySlug,
+  createInvite, getInviteByToken, acceptInvite, getInvitesByTenant,
+  getUsersByTenant, getAllTenants, updateTenant,
+} from './db/repository';
+import { v4 as uuidv4 } from 'uuid';
+
+async function handleOAuthUser(profile: OAuthUserProfile): Promise<{ token: string; user: JWTPayload }> {
+  // Check if user exists by provider ID or email
+  let user = profile.provider === 'google'
+    ? await getUserByGoogleId(profile.providerId)
+    : await getUserByMicrosoftId(profile.providerId);
+
+  if (!user) {
+    user = await getUserByEmail(profile.email);
+  }
+
+  if (user) {
+    // Existing user — update login time
+    await updateUserLogin(user.id);
+    const payload: JWTPayload = {
+      userId: user.id,
+      tenantId: user.tenantId,
+      email: user.email,
+      role: user.role,
+    };
+    return { token: signToken(payload), user: payload };
+  }
+
+  // New user — check for pending invite
+  // If no invite exists, create in default tenant with client_viewer role
+  const defaultTenant = await getTenantBySlug('vybekoderz');
+  const tenantId = defaultTenant?.id ?? DEMO_TENANT;
+
+  const newUser = await createUser({
+    tenantId,
+    email: profile.email,
+    name: profile.name,
+    role: 'client_viewer',
+    googleId: profile.provider === 'google' ? profile.providerId : undefined,
+    microsoftId: profile.provider === 'microsoft' ? profile.providerId : undefined,
+    avatarUrl: profile.avatarUrl,
+  });
+
+  const payload: JWTPayload = {
+    userId: newUser.id,
+    tenantId: newUser.tenantId,
+    email: newUser.email,
+    role: newUser.role,
+  };
+  return { token: signToken(payload), user: payload };
+}
+
+// Google OAuth callback
+app.get('/api/auth/google/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).json({ error: 'Missing auth code' });
+
+  try {
+    const profile = await exchangeGoogleCode(code as string);
+    const { token } = await handleOAuthUser(profile);
+    // Redirect to frontend with token
+    const appUrl = process.env.APP_URL || 'http://localhost:5173';
+    res.redirect(`${appUrl}/auth/callback?token=${token}`);
+  } catch (error) {
+    console.error('Google OAuth error:', error);
+    res.status(500).json({ error: 'OAuth authentication failed' });
+  }
+});
+
+// Microsoft OAuth callback
+app.get('/api/auth/microsoft/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).json({ error: 'Missing auth code' });
+
+  try {
+    const profile = await exchangeMicrosoftCode(code as string);
+    const { token } = await handleOAuthUser(profile);
+    const appUrl = process.env.APP_URL || 'http://localhost:5173';
+    res.redirect(`${appUrl}/auth/callback?token=${token}`);
+  } catch (error) {
+    console.error('Microsoft OAuth error:', error);
+    res.status(500).json({ error: 'OAuth authentication failed' });
+  }
+});
+
+// ============================================================
+// INVITE SYSTEM
+// ============================================================
+
+// Create invite
+app.post('/api/invites', authenticate, authorize('canManageUsers'), async (req, res) => {
+  const { email, role } = req.body;
+  if (!email) return res.status(400).json({ error: 'Missing email' });
+
+  try {
+    const token = uuidv4();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const invite = await createInvite({
+      tenantId: req.auth!.tenantId,
+      email,
+      role: role || 'builder',
+      invitedBy: req.auth!.userId,
+      token,
+      expiresAt,
+    });
+    res.status(201).json(invite);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create invite' });
+  }
+});
+
+// List invites for current tenant
+app.get('/api/invites', authenticate, authorize('canManageUsers'), async (req, res) => {
+  try {
+    const invites = await getInvitesByTenant(req.auth!.tenantId);
+    res.json(invites);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to list invites' });
+  }
+});
+
+// Accept invite
+app.post('/api/invites/:token/accept', async (req, res) => {
+  try {
+    const invite = await getInviteByToken(req.params.token);
+    if (!invite) return res.status(404).json({ error: 'Invalid or expired invite' });
+
+    // Create user from invite (or link existing)
+    const existingUser = await getUserByEmail(invite.email);
+    if (existingUser) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+
+    const { name, password } = req.body;
+    const user = await createUser({
+      tenantId: invite.tenantId,
+      email: invite.email,
+      name: name || invite.email.split('@')[0],
+      role: invite.role,
+    });
+
+    await acceptInvite(req.params.token);
+
+    const payload: JWTPayload = {
+      userId: user.id,
+      tenantId: user.tenantId,
+      email: user.email,
+      role: user.role,
+    };
+    res.json({ token: signToken(payload), user: payload });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to accept invite' });
+  }
+});
+
+// ============================================================
+// TEAM MANAGEMENT
+// ============================================================
+
+app.get('/api/team', authenticate, authorize('canManageUsers'), async (req, res) => {
+  try {
+    const users = await getUsersByTenant(req.auth!.tenantId);
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to list team' });
+  }
+});
+
+// ============================================================
+// TENANT MANAGEMENT (super admin only)
+// ============================================================
+
+app.get('/api/tenants', authenticate, requireRole('super_admin'), async (_req, res) => {
+  try {
+    const tenants = await getAllTenants();
+    res.json(tenants);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to list tenants' });
+  }
+});
+
+app.patch('/api/tenants/:id', authenticate, requireRole('super_admin'), async (req, res) => {
+  try {
+    const tenant = await updateTenant(req.params.id, req.body);
+    if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+    res.json(tenant);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update tenant' });
+  }
+});
+
+// ============================================================
+// BROWSERBASE SESSIONS
+// ============================================================
+
+import {
+  createBrowserbaseSession, getBrowserbaseSession, stopBrowserbaseSession,
+  getDebugUrls, isBrowserbaseConfigured,
+} from './browser/browserbase';
+
+app.get('/api/browserbase/status', (_req, res) => {
+  res.json({ configured: isBrowserbaseConfigured() });
+});
+
+app.post('/api/browserbase/sessions', async (_req, res) => {
+  try {
+    const session = await createBrowserbaseSession();
+    if (!session) return res.status(503).json({ error: 'Browserbase not configured' });
+    res.status(201).json(session);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create browser session' });
+  }
+});
+
+app.get('/api/browserbase/sessions/:id', async (req, res) => {
+  const session = await getBrowserbaseSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  res.json(session);
+});
+
+app.post('/api/browserbase/sessions/:id/stop', async (req, res) => {
+  const stopped = await stopBrowserbaseSession(req.params.id);
+  res.json({ stopped });
+});
+
+app.get('/api/browserbase/sessions/:id/debug', async (req, res) => {
+  const urls = await getDebugUrls(req.params.id);
+  if (!urls) return res.status(404).json({ error: 'Debug URLs not available' });
+  res.json(urls);
 });
 
 // ============================================================

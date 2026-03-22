@@ -340,7 +340,68 @@ Wired real Claude API integration and agent routing:
 - `src/pages/IntegrationsPage.tsx` — Integration hub detail view
 - `src/pages/AdminPage.tsx` — Tenant & team management
 
-**Phase 6 — Next: Real database persistence, live OAuth flows, Browserbase integration, production deploy to Railway**
+**Phase 6 — Real Database Persistence, Live OAuth, Browserbase, Production Ready** (COMPLETE)
+
+### Database Repository Layer (`server/db/repository.ts`)
+- Full Drizzle ORM repository: tenants, users, invites, tasks, memories, IQ scores, browser sessions, overrides
+- All queries use `withTenant()` for RLS context setting
+- CRUD operations for every entity with proper typing
+
+### Live OAuth Flows
+- `GET /api/auth/google/callback` — Google code exchange → user upsert → JWT → redirect to frontend
+- `GET /api/auth/microsoft/callback` — Microsoft code exchange → same flow
+- `handleOAuthUser()`: finds user by provider ID or email, creates new user if needed, issues JWT
+- OAuth redirect URIs point to API server (`API_URL/api/auth/{provider}/callback`)
+- `src/pages/AuthCallbackPage.tsx` — frontend handler stores token from OAuth redirect
+
+### Invite System
+- `POST /api/invites` — create workspace invite (requires `canManageUsers`)
+- `GET /api/invites` — list tenant invites
+- `POST /api/invites/:token/accept` — accept invite, create user, return JWT
+- 7-day invite expiry, single-use tokens
+
+### Team & Tenant Management API
+- `GET /api/team` — list team members (auth required, `canManageUsers`)
+- `GET /api/tenants` — list all tenants (super admin only)
+- `PATCH /api/tenants/:id` — update tenant settings (super admin only)
+
+### Browserbase Integration (`server/browser/browserbase.ts`)
+- `createBrowserbaseSession()` — create cloud browser instance
+- `getBrowserbaseSession()` — get session status
+- `stopBrowserbaseSession()` — stop running session
+- `getDebugUrls()` — get noVNC live view + debugger URLs
+- `GET /api/browserbase/status` — check if Browserbase is configured
+- `POST /api/browserbase/sessions` — create session
+- `GET /api/browserbase/sessions/:id` — get session
+- `POST /api/browserbase/sessions/:id/stop` — stop session
+- `GET /api/browserbase/sessions/:id/debug` — get live view URLs
+
+### Database Scripts
+- `npm run db:generate` — generate Drizzle migrations
+- `npm run db:migrate` — run pending migrations
+- `npm run db:seed` — seed demo data (tenants, users, agents, memories)
+- `npm run db:push` — push schema directly (dev)
+- `npm run db:studio` — open Drizzle Studio
+- `npm run start` — production start
+
+### Seed Data (`server/db/seed.ts`)
+- VybeKoderz enterprise tenant + 2 client tenants (Empire Title, Acme Digital)
+- Super admin + 3 team members + 1 client viewer
+- 5 agent definitions (Donna + 4 dept agents)
+- 7 demo memories across all 5 layers
+
+### Updated .env.example
+- Added: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
+- Added: `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID`
+- Added: `API_URL` (separate from `APP_URL` for OAuth redirects)
+
+### Production Dockerfile
+- Multi-stage build (Node 20 Alpine)
+- Copies `drizzle/` migration files
+- Runs `db:migrate` before server start
+- Auto-applies schema changes on deploy
+
+**Phase 7 — Next: Real-time DB event streaming, Playwright SOP execution via Browserbase, production Railway deploy with PostgreSQL**
 
 ## Rules for Claude Code Sessions
 - Always read this CLAUDE.md first

@@ -9,6 +9,7 @@ import SOPLibraryPage from './pages/SOPLibraryPage';
 import IntegrationsPage from './pages/IntegrationsPage';
 import AdminPage from './pages/AdminPage';
 import LoginPage from './pages/LoginPage';
+import AuthCallbackPage from './pages/AuthCallbackPage';
 import { useAuth } from './hooks/useAuth';
 import { useTaskStore } from './hooks/useTaskStore';
 
@@ -48,7 +49,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return (
+      <Routes>
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
+        <Route path="*" element={<LoginPage />} />
+      </Routes>
+    );
   }
 
   return <ProtectedLayout />;
