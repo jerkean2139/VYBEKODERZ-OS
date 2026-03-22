@@ -193,6 +193,7 @@ Right: Context inspector — memory report, IQ score, quick log
 - **Voice** — Whisper STT + ElevenLabs TTS + meeting intelligence
 - **Integrations** — 18 MCP-connected services across 6 categories
 - **Job Queue** — pg-boss for reliable task processing with retry
+- **Autonomy Engine** — 5 scheduled jobs (memory consolidation, daily report, weekly IQ, SOP optimization, specialist detection)
 - **Notifications** — Real-time activity feed via SSE
 - **Artifacts** — Railway Volume storage for task outputs (reports, CSVs, screenshots)
 - **Billing** — Plan limits enforcement (starter/pro/enterprise)
@@ -216,6 +217,7 @@ Right: Context inspector — memory report, IQ score, quick log
 **Webhooks**: POST `/api/webhooks/:source`
 **Notifications**: GET `/api/notifications`, GET `.../count`, POST `.../:id/read`, POST `.../read-all`
 **Artifacts**: GET/POST `/api/artifacts`, GET/DELETE `/api/artifacts/:id`, GET `.../download`
+**Autonomy**: POST `/api/autonomy/consolidate`, `.../report`, `.../assessment`, `.../optimize-sops`, `.../detect-specialists`
 **Billing**: GET `/api/billing/usage`, GET `/api/billing/limits`
 **SSE**: GET `/api/events`
 

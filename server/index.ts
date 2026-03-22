@@ -18,6 +18,10 @@ import { generateDailyReport } from './memory/report';
 import { initJobQueue, enqueueRouteTask, enqueueWebhook } from './jobs/queue';
 import { registerWorkers } from './jobs/workers';
 import {
+  registerAutonomyJobs, consolidateMemories, runDailyReport,
+  runWeeklyAssessment, optimizeSOPs, detectSpecialistNeeds,
+} from './jobs/autonomy';
+import {
   getNotifications, addNotification, markRead, markAllRead, getUnreadCount, onNotification,
 } from './notifications/feed';
 import {
@@ -527,6 +531,55 @@ app.get('/api/memory/report', async (_req, res) => {
 });
 
 // ============================================================
+// AUTONOMY — manual triggers for scheduled jobs
+// ============================================================
+
+app.post('/api/autonomy/consolidate', async (_req, res) => {
+  try {
+    const result = await consolidateMemories(DEMO_TENANT);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Memory consolidation failed' });
+  }
+});
+
+app.post('/api/autonomy/report', async (_req, res) => {
+  try {
+    const report = await runDailyReport(DEMO_TENANT);
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: 'Daily report generation failed' });
+  }
+});
+
+app.post('/api/autonomy/assessment', async (_req, res) => {
+  try {
+    const assessment = await runWeeklyAssessment(DEMO_TENANT);
+    res.json(assessment);
+  } catch (error) {
+    res.status(500).json({ error: 'Weekly assessment failed' });
+  }
+});
+
+app.post('/api/autonomy/optimize-sops', async (_req, res) => {
+  try {
+    const result = await optimizeSOPs(DEMO_TENANT);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'SOP optimization failed' });
+  }
+});
+
+app.post('/api/autonomy/detect-specialists', async (_req, res) => {
+  try {
+    const recommendations = await detectSpecialistNeeds(DEMO_TENANT);
+    res.json({ recommendations });
+  } catch (error) {
+    res.status(500).json({ error: 'Specialist detection failed' });
+  }
+});
+
+// ============================================================
 // BROWSER AGENT
 // ============================================================
 
@@ -856,6 +909,7 @@ async function start() {
   const boss = await initJobQueue();
   if (boss) {
     await registerWorkers(boss);
+    await registerAutonomyJobs(boss);
   }
 
   app.listen(PORT, () => {
@@ -867,7 +921,7 @@ async function start() {
     console.log(`  Integrations: ${getHubStats().total} configured, ${getHubStats().connected} connected`);
     console.log(`  Rate limiting: active (100 req/min API, 20 req/min auth)`);
     console.log(`  Job queue: ${boss ? 'pg-boss active' : 'in-memory fallback'}`);
-    console.log(`  Storage: ${isStorageConfigured() ? 'S3 configured' : 'metadata only'}`);
+    console.log(`  Storage: local disk (${isStorageConfigured() ? 'ready' : 'not configured'})`);
   });
 }
 
