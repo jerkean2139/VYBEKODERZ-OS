@@ -25,5 +25,5 @@ EXPOSE 3001
 RUN mkdir -p /data/artifacts
 ENV STORAGE_PATH=/data/artifacts
 
-# Start server
-CMD ["npx", "tsx", "server/index.ts"]
+# Start server — use node_modules/.bin directly to avoid npx overhead
+CMD ["node_modules/.bin/tsx", "server/index.ts"]

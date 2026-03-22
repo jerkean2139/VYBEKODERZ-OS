@@ -1019,43 +1019,41 @@ app.get('/{*splat}', (_req, res) => {
 });
 
 // ============================================================
-// START — initialize job queue, register workers, then listen
+// START — listen immediately, then initialize background services
 // ============================================================
 
-async function start() {
-  // Initialize job queue if DATABASE_URL is set
-  const boss = await initJobQueue();
+// Start HTTP server first so healthcheck passes immediately
+app.listen(PORT, () => {
+  console.log(`VybeKoderz Agent OS server running on port ${PORT}`);
+  console.log(`  Demo tenant: ${DEMO_TENANT}`);
+  console.log(`  Memory engine: ${getMemoryStats(DEMO_TENANT).totalMemories} memories seeded`);
+  console.log(`  Health: ${calculateOperationalMetrics(DEMO_TENANT).healthScore} (${calculateOperationalMetrics(DEMO_TENANT).healthLevel})`);
+  console.log(`  SOPs: ${getAllSOPs(DEMO_TENANT).length} demo SOPs loaded`);
+  console.log(`  Integrations: ${getHubStats().total} configured, ${getHubStats().connected} connected`);
+  console.log(`  Rate limiting: active (100 req/min API, 20 req/min auth)`);
+  console.log(`  Kill switch: ${getKillSwitch(DEMO_TENANT).killed ? 'KILLED' : getKillSwitch(DEMO_TENANT).throttled ? 'THROTTLED' : 'active'}`);
+  console.log(`  Storage: local disk (${isStorageConfigured() ? 'ready' : 'not configured'})`);
+});
+
+// Register event-driven autonomy triggers (runs without pg-boss)
+registerEventTriggers();
+
+// Track parent task progress when subtasks complete
+subscribe((event) => {
+  if (event.type === 'task_completed' || event.type === 'task_error') {
+    updateParentProgress(event.task.id, event.task.status, getAllTasks);
+  }
+});
+
+// Initialize job queue in background — never blocks server startup
+initJobQueue().then(async (boss) => {
   if (boss) {
     await registerWorkers(boss);
     await registerAutonomyJobs(boss);
+    console.log('  Job queue: pg-boss workers registered');
+  } else {
+    console.log('  Job queue: in-memory fallback');
   }
-
-  // Register event-driven autonomy triggers (runs without pg-boss)
-  registerEventTriggers();
-
-  // Track parent task progress when subtasks complete
-  subscribe((event) => {
-    if (event.type === 'task_completed' || event.type === 'task_error') {
-      updateParentProgress(event.task.id, event.task.status, getAllTasks);
-    }
-  });
-
-  app.listen(PORT, () => {
-    console.log(`VybeKoderz Agent OS server running on port ${PORT}`);
-    console.log(`  Demo tenant: ${DEMO_TENANT}`);
-    console.log(`  Memory engine: ${getMemoryStats(DEMO_TENANT).totalMemories} memories seeded`);
-    console.log(`  Health: ${calculateOperationalMetrics(DEMO_TENANT).healthScore} (${calculateOperationalMetrics(DEMO_TENANT).healthLevel})`);
-    console.log(`  SOPs: ${getAllSOPs(DEMO_TENANT).length} demo SOPs loaded`);
-    console.log(`  Integrations: ${getHubStats().total} configured, ${getHubStats().connected} connected`);
-    console.log(`  Rate limiting: active (100 req/min API, 20 req/min auth)`);
-    console.log(`  Job queue: ${boss ? 'pg-boss active' : 'in-memory fallback'}`);
-    console.log(`  Event triggers: task_completed, task_error, override listeners`);
-    console.log(`  Kill switch: ${getKillSwitch(DEMO_TENANT).killed ? 'KILLED' : getKillSwitch(DEMO_TENANT).throttled ? 'THROTTLED' : 'active'}`);
-    console.log(`  Storage: local disk (${isStorageConfigured() ? 'ready' : 'not configured'})`);
-  });
-}
-
-start().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
+}).catch((err) => {
+  console.error('  Job queue init error:', err);
 });
