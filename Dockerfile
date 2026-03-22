@@ -13,10 +13,11 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm install tsx
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server
-COPY --from=builder /app/drizzle ./drizzle
-COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
 COPY --from=builder /app/tsconfig.node.json ./tsconfig.node.json
+
+# Copy drizzle migrations if they exist (generated via npm run db:generate)
+RUN mkdir -p ./drizzle
 
 EXPOSE 3001
 
@@ -24,5 +25,5 @@ EXPOSE 3001
 RUN mkdir -p /data/artifacts
 ENV STORAGE_PATH=/data/artifacts
 
-# Run migrations then start server
-CMD ["sh", "-c", "npx tsx server/db/migrate.ts && npx tsx server/index.ts"]
+# Start server (migrations run if DATABASE_URL + drizzle dir present)
+CMD ["sh", "-c", "npx tsx server/index.ts"]
