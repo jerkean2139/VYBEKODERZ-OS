@@ -16,15 +16,27 @@ export async function initJobQueue(): Promise<PgBoss | null> {
     return null;
   }
 
-  boss = new PgBoss(dbUrl);
+  try {
+    boss = new PgBoss(dbUrl);
 
-  boss.on('error', (err) => {
-    console.error('pg-boss error:', err);
-  });
+    boss.on('error', (err) => {
+      console.error('pg-boss error:', err);
+    });
 
-  await boss.start();
-  console.log('  Job queue: pg-boss started');
-  return boss;
+    // Timeout after 10s so server can still start without a healthy DB
+    await Promise.race([
+      boss.start(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('pg-boss connection timeout (10s)')), 10_000)
+      ),
+    ]);
+    console.log('  Job queue: pg-boss started');
+    return boss;
+  } catch (err) {
+    console.error('  Job queue: failed to start —', (err as Error).message);
+    boss = null;
+    return null;
+  }
 }
 
 export function getQueue(): PgBoss | null {
