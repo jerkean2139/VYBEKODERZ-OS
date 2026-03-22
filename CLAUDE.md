@@ -190,7 +190,23 @@ Built the React UI shell:
 8. Scanline texture overlay
 9. Mock data for 4 tasks, 4 departments, memory items
 
-**Phase 2 — Next: Wire real Claude API + agent routing logic**
+**Phase 2 — Claude API + Agent Routing** (COMPLETE)
+Wired real Claude API integration and agent routing:
+1. Express backend server (server/) with TypeScript
+2. Anthropic SDK integration — Donna uses claude-sonnet-4-6 to classify and route tasks
+3. Full agent registry: 1 org agent (Donna), 4 dept agents, 12 specialist agents
+4. Donna routing engine with system prompt for task classification → dept → specialist
+5. Keyword-based fallback routing when Claude API unavailable
+6. Task store with in-memory state management + progress simulation
+7. SSE (Server-Sent Events) for real-time task updates to frontend
+8. React hooks (useTaskStore) for live task state + SSE subscription
+9. TaskInput component — "Tell Donna what to do..." text input
+10. LiveTaskCard component — renders server tasks with routing trace
+11. RoutingAnimation overlay — animated Donna → Dept → Specialist visualization
+12. Graceful degradation: shows mock data in DEMO mode when backend offline, switches to LIVE when connected
+13. API routes: GET /api/tasks, POST /api/tasks, PATCH /api/tasks/:id/status, GET /api/events (SSE)
+
+**Phase 3 — Next: Database, Auth, Memory Engine**
 
 ## Rules for Claude Code Sessions
 - Always read this CLAUDE.md first
