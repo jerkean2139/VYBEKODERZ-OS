@@ -2,18 +2,28 @@ import Anthropic from '@anthropic-ai/sdk';
 import { v4 as uuid } from 'uuid';
 
 // ============================================================
-// VybeKoderz 5-Layer Memory Engine
+// VybeKoderz Memory Engine — Simplified
 //
-// Layer 1: Episodic   — conversation + session logs
-// Layer 2: Semantic   — facts, preferences, client details
-// Layer 3: Procedural — learned SOPs (versioned)
-// Layer 4: Relational — relationship graph inside/outside business
-// Layer 5: Predictive — pattern-based forecasting
+// Two stores, not five:
+//   1. Context Memory — vector-indexed, searchable facts/logs/relationships
+//   2. SOPs — versioned procedure documents
+//
+// The old 5-layer model (episodic/semantic/procedural/relational/predictive)
+// was overengineered. In practice you need searchable context and versioned SOPs.
 // ============================================================
 
 const client = new Anthropic();
 
-export type MemoryType = 'episodic' | 'semantic' | 'procedural' | 'relational' | 'predictive';
+export type MemoryType = 'context' | 'sop';
+
+// Legacy type aliases for backward compatibility with existing API consumers
+export type LegacyMemoryType = 'episodic' | 'semantic' | 'procedural' | 'relational' | 'predictive';
+
+// Map legacy types to new types
+export function normalizeLegacyType(type: string): MemoryType {
+  if (type === 'sop' || type === 'procedural') return 'sop';
+  return 'context'; // episodic, semantic, relational, predictive all collapse to context
+}
 
 export interface Memory {
   id: string;
@@ -25,12 +35,13 @@ export interface Memory {
   summary: string | null;
   metadata: Record<string, unknown>;
   sourceTaskId: string | null;
-  sourceType: string | null;
+  sourceType: string | null; // 'conversation' | 'task' | 'override' | 'sop' | 'observation' | 'webhook'
   confidence: number;
   accessCount: number;
   connections: MemoryConnection[];
   version: number;
   isActive: boolean;
+  tags: string[]; // searchable tags for filtering
   createdAt: string;
   updatedAt: string;
 }
@@ -45,12 +56,13 @@ export interface MemoryQuery {
   tenantId: string;
   type?: MemoryType;
   agentId?: string;
+  tags?: string[];
   query?: string;
   limit?: number;
   minConfidence?: number;
 }
 
-// In-memory store (will be replaced by DB in production)
+// In-memory store (replaced by DB when DATABASE_URL is set)
 const memoryStore: Map<string, Memory> = new Map();
 
 // ============================================================
@@ -66,6 +78,7 @@ export function storeMemory(params: {
   sourceType?: string;
   metadata?: Record<string, unknown>;
   confidence?: number;
+  tags?: string[];
 }): Memory {
   const memory: Memory = {
     id: uuid(),
@@ -78,11 +91,12 @@ export function storeMemory(params: {
     metadata: params.metadata ?? {},
     sourceTaskId: params.sourceTaskId ?? null,
     sourceType: params.sourceType ?? null,
-    confidence: params.confidence ?? 0.8,
+    confidence: params.confidence ?? 0.85,
     accessCount: 0,
     connections: [],
     version: 1,
     isActive: true,
+    tags: params.tags ?? [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -92,56 +106,51 @@ export function storeMemory(params: {
 }
 
 // ============================================================
-// LAYER 1: EPISODIC — conversation + session logs
+// CONTEXT MEMORY — searchable facts, logs, relationships
 // ============================================================
 
-export function storeEpisodic(tenantId: string, content: string, agentId?: string, taskId?: string): Memory {
+export function storeContext(
+  tenantId: string,
+  content: string,
+  opts?: { agentId?: string; taskId?: string; sourceType?: string; tags?: string[]; confidence?: number }
+): Memory {
   return storeMemory({
     tenantId,
-    type: 'episodic',
+    type: 'context',
     content,
-    agentId,
-    sourceTaskId: taskId,
-    sourceType: 'conversation',
-    confidence: 0.95, // direct observations are high confidence
+    agentId: opts?.agentId,
+    sourceTaskId: opts?.taskId,
+    sourceType: opts?.sourceType ?? 'observation',
+    confidence: opts?.confidence ?? 0.85,
+    tags: opts?.tags ?? [],
   });
 }
 
 // ============================================================
-// LAYER 2: SEMANTIC — facts, preferences, client details
+// SOP MEMORY — versioned procedure documents
 // ============================================================
 
-export function storeSemantic(tenantId: string, content: string, metadata?: Record<string, unknown>): Memory {
-  return storeMemory({
-    tenantId,
-    type: 'semantic',
-    content,
-    metadata,
-    sourceType: 'observation',
-    confidence: 0.85,
-  });
-}
-
-// ============================================================
-// LAYER 3: PROCEDURAL — learned SOPs (versioned)
-// ============================================================
-
-export function storeProcedural(tenantId: string, content: string, agentId?: string, previousId?: string): Memory {
+export function storeSOP(
+  tenantId: string,
+  content: string,
+  opts?: { agentId?: string; previousId?: string; tags?: string[] }
+): Memory {
   const memory = storeMemory({
     tenantId,
-    type: 'procedural',
+    type: 'sop',
     content,
-    agentId,
+    agentId: opts?.agentId,
     sourceType: 'sop',
     confidence: 0.9,
+    tags: opts?.tags ?? ['sop'],
   });
 
   // Version chain
-  if (previousId) {
-    const previous = memoryStore.get(previousId);
+  if (opts?.previousId) {
+    const previous = memoryStore.get(opts.previousId);
     if (previous) {
       memory.version = previous.version + 1;
-      previous.isActive = false; // deactivate old version
+      previous.isActive = false;
     }
   }
 
@@ -149,49 +158,27 @@ export function storeProcedural(tenantId: string, content: string, agentId?: str
 }
 
 // ============================================================
-// LAYER 4: RELATIONAL — relationship graph
+// LEGACY ALIASES — backward compatibility
 // ============================================================
 
-export function storeRelational(tenantId: string, content: string, connections?: MemoryConnection[]): Memory {
-  const memory = storeMemory({
-    tenantId,
-    type: 'relational',
-    content,
-    sourceType: 'observation',
-    confidence: 0.75,
-  });
-
-  if (connections) {
-    memory.connections = connections;
-    // Bidirectional: add reverse connections
-    for (const conn of connections) {
-      const target = memoryStore.get(conn.memoryId);
-      if (target) {
-        target.connections.push({
-          memoryId: memory.id,
-          relationship: `inverse:${conn.relationship}`,
-          strength: conn.strength,
-        });
-      }
-    }
-  }
-
-  return memory;
+export function storeEpisodic(tenantId: string, content: string, agentId?: string, taskId?: string): Memory {
+  return storeContext(tenantId, content, { agentId, taskId, sourceType: 'conversation', tags: ['log'], confidence: 0.95 });
 }
 
-// ============================================================
-// LAYER 5: PREDICTIVE — pattern-based forecasting
-// ============================================================
+export function storeSemantic(tenantId: string, content: string, metadata?: Record<string, unknown>): Memory {
+  return storeContext(tenantId, content, { sourceType: 'observation', tags: ['fact'] });
+}
 
-export function storePredictive(tenantId: string, content: string, metadata?: Record<string, unknown>): Memory {
-  return storeMemory({
-    tenantId,
-    type: 'predictive',
-    content,
-    metadata: { ...metadata, predictionType: 'pattern' },
-    sourceType: 'analysis',
-    confidence: 0.7, // predictions start lower confidence
-  });
+export function storeProcedural(tenantId: string, content: string, agentId?: string, previousId?: string): Memory {
+  return storeSOP(tenantId, content, { agentId, previousId });
+}
+
+export function storeRelational(tenantId: string, content: string, _connections?: MemoryConnection[]): Memory {
+  return storeContext(tenantId, content, { sourceType: 'observation', tags: ['relationship'] });
+}
+
+export function storePredictive(tenantId: string, content: string, _metadata?: Record<string, unknown>): Memory {
+  return storeContext(tenantId, content, { sourceType: 'analysis', tags: ['pattern'], confidence: 0.7 });
 }
 
 // ============================================================
@@ -212,6 +199,10 @@ export function queryMemories(params: MemoryQuery): Memory[] {
 
   if (params.minConfidence) {
     results = results.filter(m => m.confidence >= params.minConfidence);
+  }
+
+  if (params.tags?.length) {
+    results = results.filter(m => params.tags!.some(t => m.tags.includes(t)));
   }
 
   // Sort by relevance (confidence * recency)
@@ -243,20 +234,17 @@ export function getMemoryStats(tenantId: string) {
   const byType: Record<string, number> = {};
   let totalConfidence = 0;
   let connectionCount = 0;
-  let predictiveCount = 0;
 
   for (const m of all) {
     byType[m.type] = (byType[m.type] || 0) + 1;
     totalConfidence += m.confidence;
     connectionCount += m.connections.length;
-    if (m.type === 'predictive') predictiveCount++;
   }
 
   return {
     totalMemories: all.length,
     confidenceAvg: all.length > 0 ? Math.round((totalConfidence / all.length) * 100) : 0,
     connectionCount,
-    predictiveTriggers: predictiveCount,
     byType,
   };
 }
@@ -311,25 +299,15 @@ Only return strong, meaningful connections. Maximum 5 connections.`,
 // ============================================================
 
 export function seedDemoMemories(tenantId: string) {
-  // Episodic
-  storeEpisodic(tenantId, 'Client prefers Loom video walkthroughs over written documentation');
-  storeEpisodic(tenantId, 'Weekly standup moved from Monday 9am to Tuesday 10am per client request');
-  storeEpisodic(tenantId, 'Browser step learned from human override session: click "Advanced" before "Submit"');
+  // Context memories
+  storeContext(tenantId, 'Client prefers Loom video walkthroughs over written documentation', { sourceType: 'conversation', tags: ['preference', 'client'] });
+  storeContext(tenantId, 'Weekly standup moved from Monday 9am to Tuesday 10am per client request', { sourceType: 'conversation', tags: ['schedule', 'client'] });
+  storeContext(tenantId, 'Acme Corp primary contact: Sarah Chen, VP Operations', { sourceType: 'observation', tags: ['contact', 'client'] });
+  storeContext(tenantId, 'Client billing cycle: net-30, invoice on 1st of month', { sourceType: 'observation', tags: ['billing', 'client'] });
+  storeContext(tenantId, 'Invoice delays correlate with board meeting weeks — CFO unavailable for approvals', { sourceType: 'observation', tags: ['relationship', 'billing'] });
+  storeContext(tenantId, 'Support request volume spikes on Mondays — related to weekend system issues', { sourceType: 'observation', tags: ['pattern', 'support'] });
 
-  // Semantic
-  storeSemantic(tenantId, 'Acme Corp primary contact: Sarah Chen, VP Operations', { entity: 'Acme Corp', type: 'contact' });
-  storeSemantic(tenantId, 'Client billing cycle: net-30, invoice on 1st of month', { type: 'billing' });
-  storeSemantic(tenantId, 'Preferred communication: Slack for quick questions, email for formal updates', { type: 'preference' });
-
-  // Procedural
-  storeProcedural(tenantId, 'Empire Title Weekly SOP: 1) Login to SoftPro 2) Pull closing schedule 3) Export to CSV 4) Generate Monday briefing 5) Send via Slack');
-  storeProcedural(tenantId, 'GHL Follow-up Sequence: Check last contact → Wait 3 days → Send personalized email → Log in CRM → Set reminder for 7 days');
-
-  // Relational
-  storeRelational(tenantId, 'Invoice delays correlate with board meeting weeks — CFO unavailable for approvals');
-  storeRelational(tenantId, 'Support request volume spikes on Mondays — related to weekend system issues accumulating');
-
-  // Predictive
-  storePredictive(tenantId, 'Client likely to request Q2 planning session in next 2 weeks based on previous year pattern', { trigger: 'calendar', dueDate: '2026-04-01' });
-  storePredictive(tenantId, 'Outbound response rates drop 40% during March — likely due to fiscal year-end budget freeze', { trigger: 'seasonal', confidence: 0.72 });
+  // SOPs
+  storeSOP(tenantId, 'Empire Title Weekly SOP: 1) Login to SoftPro 2) Pull closing schedule 3) Export to CSV 4) Generate Monday briefing 5) Send via Slack', { tags: ['empire-title', 'weekly'] });
+  storeSOP(tenantId, 'GHL Follow-up Sequence: Check last contact → Wait 3 days → Send personalized email → Log in CRM → Set reminder for 7 days', { tags: ['ghl', 'follow-up'] });
 }

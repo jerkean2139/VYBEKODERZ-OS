@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import rateLimit from 'express-rate-limit';
 import { routeTask } from './donna';
 import { createTask, routeTaskToAgent, getAllTasks, getTask, updateTaskStatus, subscribe } from './taskStore';
 import { agents } from './agents';
@@ -8,19 +9,55 @@ import { signToken, type JWTPayload } from './auth/jwt';
 import { getGoogleAuthUrl, getMicrosoftAuthUrl } from './auth/oauth';
 import { authenticate, authorize, requireRole } from './auth/middleware';
 import {
+  storeContext, storeSOP, storeMemory, normalizeLegacyType,
   storeEpisodic, storeSemantic, storeProcedural, storeRelational, storePredictive,
   queryMemories, getMemoryStats, seedDemoMemories, type MemoryType,
 } from './memory/engine';
-import { calculateIQScore } from './memory/iqScore';
+import { calculateIQScore, calculateOperationalMetrics } from './memory/iqScore';
 import { generateDailyReport } from './memory/report';
+import { initJobQueue, enqueueRouteTask, enqueueWebhook } from './jobs/queue';
+import { registerWorkers } from './jobs/workers';
+import {
+  getNotifications, addNotification, markRead, markAllRead, getUnreadCount, onNotification,
+} from './notifications/feed';
+import {
+  uploadArtifact, getArtifact, getArtifactUrl, getArtifactsByTask,
+  getArtifactsByTenant, deleteArtifact, isStorageConfigured,
+} from './storage/artifacts';
+import {
+  checkTaskLimit, incrementTaskUsage, getUsageStats, type PlanTier,
+} from './billing/limits';
 import type { TaskEvent } from './types';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const DEMO_TENANT = 'vybekoderz-demo';
+const DEMO_PLAN: PlanTier = 'enterprise';
+
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+// Rate limiting — per-IP, 100 req/min for API routes
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+  skip: (req) => !req.path.startsWith('/api/'),
+});
+app.use(apiLimiter);
+
+// Stricter rate limit for auth endpoints (20 req/min)
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { error: 'Too many auth attempts' },
+});
 
 // Serve static frontend in production
 const distPath = path.join(__dirname, '..', 'dist');
@@ -81,18 +118,51 @@ app.post('/api/tasks', async (req, res) => {
     return res.status(400).json({ error: 'Missing input string' });
   }
 
+  // Billing enforcement — check task limit
+  const limitCheck = checkTaskLimit(DEMO_TENANT, DEMO_PLAN);
+  if (!limitCheck.allowed) {
+    return res.status(429).json({
+      error: 'Monthly task limit reached',
+      limit: limitCheck.limit,
+      remaining: limitCheck.remaining,
+    });
+  }
+
   const task = createTask(input);
+  incrementTaskUsage(DEMO_TENANT);
 
   try {
     const decision = await routeTask(input);
     const routed = routeTaskToAgent(task.id, decision);
 
-    // Store episodic memory of task creation
-    storeEpisodic(DEMO_TENANT, `Task created: "${decision.title}" — routed to ${decision.department}/${decision.specialist}`, 'donna', task.id);
+    // Store context memory of task creation
+    storeContext(DEMO_TENANT, `Task created: "${decision.title}" — routed to ${decision.department}/${decision.specialist}`, {
+      agentId: 'donna', taskId: task.id, sourceType: 'task', tags: ['task', 'routing'],
+    });
+
+    // Emit notification
+    addNotification({
+      tenantId: DEMO_TENANT,
+      type: 'task_routed',
+      title: 'Task Routed',
+      message: `"${decision.title}" → ${decision.department} → ${decision.specialist}`,
+      agentId: 'donna',
+      taskId: task.id,
+    });
 
     res.status(201).json({ task: routed, routing: decision });
   } catch {
     updateTaskStatus(task.id, 'error');
+
+    addNotification({
+      tenantId: DEMO_TENANT,
+      type: 'task_error',
+      title: 'Routing Failed',
+      message: `Failed to route: "${input.slice(0, 60)}..."`,
+      agentId: 'donna',
+      taskId: task.id,
+    });
+
     res.status(500).json({ error: 'Routing failed', taskId: task.id });
   }
 });
@@ -112,16 +182,26 @@ app.patch('/api/tasks/:id/status', (req, res) => {
 // AUTH — OAuth + JWT
 // ============================================================
 
-// Get OAuth URLs
+// Get OAuth URLs with CSRF nonce
+import crypto from 'crypto';
+const oauthStates: Map<string, number> = new Map(); // nonce -> expiry timestamp
+
 app.get('/api/auth/providers', (_req, res) => {
+  const nonce = crypto.randomBytes(16).toString('hex');
+  oauthStates.set(nonce, Date.now() + 5 * 60 * 1000); // 5 min expiry
+  // Clean expired states
+  for (const [key, exp] of oauthStates) {
+    if (exp < Date.now()) oauthStates.delete(key);
+  }
   res.json({
-    google: getGoogleAuthUrl('login'),
-    microsoft: getMicrosoftAuthUrl('login'),
+    google: getGoogleAuthUrl(nonce),
+    microsoft: getMicrosoftAuthUrl(nonce),
+    state: nonce,
   });
 });
 
 // Demo login (development only — generates JWT without OAuth)
-app.post('/api/auth/demo', (req, res) => {
+app.post('/api/auth/demo', authLimiter, (req, res) => {
   const { role = 'agency_admin', name = 'Demo User' } = req.body;
   const payload: JWTPayload = {
     userId: 'demo-user-001',
@@ -197,15 +277,24 @@ async function handleOAuthUser(profile: OAuthUserProfile): Promise<{ token: stri
   return { token: signToken(payload), user: payload };
 }
 
+// Verify OAuth state nonce (CSRF protection)
+function verifyOAuthState(state: string | undefined): boolean {
+  if (!state) return false;
+  const expiry = oauthStates.get(state);
+  if (!expiry || expiry < Date.now()) return false;
+  oauthStates.delete(state); // single-use
+  return true;
+}
+
 // Google OAuth callback
-app.get('/api/auth/google/callback', async (req, res) => {
-  const { code } = req.query;
+app.get('/api/auth/google/callback', authLimiter, async (req, res) => {
+  const { code, state } = req.query;
   if (!code) return res.status(400).json({ error: 'Missing auth code' });
+  if (!verifyOAuthState(state as string)) return res.status(403).json({ error: 'Invalid OAuth state' });
 
   try {
     const profile = await exchangeGoogleCode(code as string);
     const { token } = await handleOAuthUser(profile);
-    // Redirect to frontend with token
     const appUrl = process.env.APP_URL || 'http://localhost:5173';
     res.redirect(`${appUrl}/auth/callback?token=${token}`);
   } catch (error) {
@@ -215,9 +304,10 @@ app.get('/api/auth/google/callback', async (req, res) => {
 });
 
 // Microsoft OAuth callback
-app.get('/api/auth/microsoft/callback', async (req, res) => {
-  const { code } = req.query;
+app.get('/api/auth/microsoft/callback', authLimiter, async (req, res) => {
+  const { code, state } = req.query;
   if (!code) return res.status(400).json({ error: 'Missing auth code' });
+  if (!verifyOAuthState(state as string)) return res.status(403).json({ error: 'Invalid OAuth state' });
 
   try {
     const profile = await exchangeMicrosoftCode(code as string);
@@ -382,25 +472,17 @@ app.get('/api/browserbase/sessions/:id/debug', async (req, res) => {
 
 // Store a new memory
 app.post('/api/memory', (req, res) => {
-  const { type, content, agentId, metadata } = req.body;
+  const { type, content, agentId, tags, metadata } = req.body;
   if (!content || !type) {
     return res.status(400).json({ error: 'Missing content or type' });
   }
 
-  const validTypes: MemoryType[] = ['episodic', 'semantic', 'procedural', 'relational', 'predictive'];
-  if (!validTypes.includes(type)) {
-    return res.status(400).json({ error: `Invalid type. Must be one of: ${validTypes.join(', ')}` });
-  }
+  // Accept both new types (context, sop) and legacy types (episodic, semantic, etc.)
+  const normalized = normalizeLegacyType(type);
+  const memory = normalized === 'sop'
+    ? storeSOP(DEMO_TENANT, content, { agentId, tags })
+    : storeContext(DEMO_TENANT, content, { agentId, sourceType: metadata?.sourceType as string, tags });
 
-  const storeFns = {
-    episodic: () => storeEpisodic(DEMO_TENANT, content, agentId),
-    semantic: () => storeSemantic(DEMO_TENANT, content, metadata),
-    procedural: () => storeProcedural(DEMO_TENANT, content, agentId),
-    relational: () => storeRelational(DEMO_TENANT, content),
-    predictive: () => storePredictive(DEMO_TENANT, content, metadata),
-  };
-
-  const memory = storeFns[type]();
   res.status(201).json(memory);
 });
 
@@ -622,6 +704,140 @@ app.get('/api/integrations/:id/health', (req, res) => {
 });
 
 // ============================================================
+// WEBHOOK INGESTION — event-driven task creation
+// ============================================================
+
+const webhookLimiter = rateLimit({ windowMs: 60 * 1000, max: 50, message: { error: 'Webhook rate limit exceeded' } });
+
+app.post('/api/webhooks/:source', webhookLimiter, async (req, res) => {
+  const { source } = req.params;
+  const payload = req.body;
+  const tenantId = (req.query.tenant as string) || DEMO_TENANT;
+
+  // Enqueue for async processing if job queue available
+  await enqueueWebhook({ source, payload, tenantId });
+
+  // Also create a task if the webhook has actionable content
+  if (payload.action || payload.event || payload.type) {
+    const input = `[Webhook: ${source}] ${payload.action || payload.event || payload.type}: ${JSON.stringify(payload.data || payload).slice(0, 200)}`;
+    const task = createTask(input);
+
+    // Route async
+    const decision = await routeTask(input).catch(() => null);
+    if (decision) routeTaskToAgent(task.id, decision);
+
+    return res.status(201).json({ task: task.id, queued: true });
+  }
+
+  res.json({ received: true, source });
+});
+
+// ============================================================
+// NOTIFICATION FEED
+// ============================================================
+
+// Broadcast notifications via SSE
+onNotification((notification) => {
+  const data = JSON.stringify({ type: 'notification', notification });
+  for (const client of sseClients) {
+    client.write(`data: ${data}\n\n`);
+  }
+});
+
+app.get('/api/notifications', (req, res) => {
+  const tenantId = DEMO_TENANT;
+  const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
+  const unreadOnly = req.query.unread === 'true';
+  res.json(getNotifications(tenantId, { limit, unreadOnly }));
+});
+
+app.get('/api/notifications/count', (_req, res) => {
+  res.json({ unread: getUnreadCount(DEMO_TENANT) });
+});
+
+app.post('/api/notifications/:id/read', (req, res) => {
+  markRead(DEMO_TENANT, req.params.id);
+  res.json({ success: true });
+});
+
+app.post('/api/notifications/read-all', (_req, res) => {
+  const count = markAllRead(DEMO_TENANT);
+  res.json({ marked: count });
+});
+
+// ============================================================
+// ARTIFACT STORAGE
+// ============================================================
+
+import multer from 'multer';
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB max
+
+app.get('/api/storage/status', (_req, res) => {
+  res.json({ configured: isStorageConfigured() });
+});
+
+app.post('/api/artifacts', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const artifact = await uploadArtifact({
+    tenantId: DEMO_TENANT,
+    taskId: req.body.taskId,
+    filename: req.file.originalname,
+    contentType: req.file.mimetype,
+    data: req.file.buffer,
+  });
+  res.status(201).json(artifact);
+});
+
+app.get('/api/artifacts', (req, res) => {
+  const taskId = req.query.taskId as string;
+  if (taskId) {
+    res.json(getArtifactsByTask(taskId));
+  } else {
+    res.json(getArtifactsByTenant(DEMO_TENANT));
+  }
+});
+
+app.get('/api/artifacts/:id', (req, res) => {
+  const artifact = getArtifact(req.params.id);
+  if (!artifact) return res.status(404).json({ error: 'Artifact not found' });
+  res.json(artifact);
+});
+
+app.get('/api/artifacts/:id/url', async (req, res) => {
+  const url = await getArtifactUrl(req.params.id);
+  if (!url) return res.status(404).json({ error: 'Artifact not found or storage not configured' });
+  res.json({ url });
+});
+
+app.delete('/api/artifacts/:id', async (req, res) => {
+  const deleted = await deleteArtifact(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Artifact not found' });
+  res.json({ deleted: true });
+});
+
+// ============================================================
+// BILLING & USAGE
+// ============================================================
+
+app.get('/api/billing/usage', (_req, res) => {
+  res.json(getUsageStats(DEMO_TENANT, DEMO_PLAN));
+});
+
+app.get('/api/billing/limits', (_req, res) => {
+  const check = checkTaskLimit(DEMO_TENANT, DEMO_PLAN);
+  res.json(check);
+});
+
+// ============================================================
+// OPERATIONAL METRICS
+// ============================================================
+
+app.get('/api/metrics', (_req, res) => {
+  res.json(calculateOperationalMetrics(DEMO_TENANT));
+});
+
+// ============================================================
 // SPA FALLBACK — serve index.html for all non-API routes
 // ============================================================
 
@@ -630,14 +846,30 @@ app.get('*', (_req, res) => {
 });
 
 // ============================================================
-// START
+// START — initialize job queue, register workers, then listen
 // ============================================================
 
-app.listen(PORT, () => {
-  console.log(`VybeKoderz Agent OS server running on port ${PORT}`);
-  console.log(`  Demo tenant: ${DEMO_TENANT}`);
-  console.log(`  Memory engine: ${getMemoryStats(DEMO_TENANT).totalMemories} memories seeded`);
-  console.log(`  IQ Score: ${calculateIQScore(DEMO_TENANT).totalScore} (${calculateIQScore(DEMO_TENANT).level})`);
-  console.log(`  SOPs: ${getAllSOPs(DEMO_TENANT).length} demo SOPs loaded`);
-  console.log(`  Integrations: ${getHubStats().total} configured, ${getHubStats().connected} connected`);
+async function start() {
+  // Initialize job queue if DATABASE_URL is set
+  const boss = await initJobQueue();
+  if (boss) {
+    await registerWorkers(boss);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`VybeKoderz Agent OS server running on port ${PORT}`);
+    console.log(`  Demo tenant: ${DEMO_TENANT}`);
+    console.log(`  Memory engine: ${getMemoryStats(DEMO_TENANT).totalMemories} memories seeded`);
+    console.log(`  Health: ${calculateOperationalMetrics(DEMO_TENANT).healthScore} (${calculateOperationalMetrics(DEMO_TENANT).healthLevel})`);
+    console.log(`  SOPs: ${getAllSOPs(DEMO_TENANT).length} demo SOPs loaded`);
+    console.log(`  Integrations: ${getHubStats().total} configured, ${getHubStats().connected} connected`);
+    console.log(`  Rate limiting: active (100 req/min API, 20 req/min auth)`);
+    console.log(`  Job queue: ${boss ? 'pg-boss active' : 'in-memory fallback'}`);
+    console.log(`  Storage: ${isStorageConfigured() ? 'S3 configured' : 'metadata only'}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
