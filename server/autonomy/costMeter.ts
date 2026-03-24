@@ -7,7 +7,12 @@ import Anthropic from '@anthropic-ai/sdk';
 // Provides per-tenant, per-job cost tracking with daily budgets.
 // ============================================================
 
-const client = new Anthropic();
+// Lazy client — avoids crash if ANTHROPIC_API_KEY missing at import time
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic();
+  return _client;
+}
 
 export interface APICallMetrics {
   inputTokens: number;
@@ -175,7 +180,7 @@ export async function meteredClaudeCall(params: {
     return null;
   }
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model,
     max_tokens: params.maxTokens ?? 1024,
     system: params.system,

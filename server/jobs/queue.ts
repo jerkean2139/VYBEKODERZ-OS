@@ -20,7 +20,12 @@ export async function initJobQueue(): Promise<PgBoss | null> {
     boss = new PgBoss(dbUrl);
 
     boss.on('error', (err) => {
-      console.error('pg-boss error:', err);
+      console.error('[pg-boss] error event:', err?.message ?? err);
+    });
+
+    // pg-boss can emit 'wip' events on internal failures — catch them
+    (boss as any).on('wip', (data: unknown) => {
+      console.log('[pg-boss] wip event:', data);
     });
 
     // Timeout after 10s so server can still start without a healthy DB

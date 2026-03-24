@@ -2,7 +2,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Department, RoutingDecision } from './types';
 import { agents } from './agents';
 
-const client = new Anthropic();
+// Lazy client — avoids crash if ANTHROPIC_API_KEY missing at import time
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic();
+  return _client;
+}
 
 const ROUTING_SYSTEM_PROMPT = `You are Donna, Chief AI Agent of VybeKoderz AI Agent OS. Your job is to analyze incoming task requests and route them to the correct department and specialist agent.
 
@@ -44,7 +49,7 @@ Specialist IDs: outbound-specialist, deal-strategist, sop-executor, scheduler, b
 
 export async function routeTask(input: string): Promise<RoutingDecision> {
   try {
-    const message = await client.messages.create({
+    const message = await getClient().messages.create({
       model: 'claude-sonnet-4-6-20250514',
       max_tokens: 512,
       system: ROUTING_SYSTEM_PROMPT,

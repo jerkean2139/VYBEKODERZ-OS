@@ -1081,6 +1081,12 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`  Storage: local disk (${isStorageConfigured() ? 'ready' : 'not configured'})`);
 });
 
+// Heartbeat — log every 60s so Railway logs show the server is alive
+setInterval(() => {
+  const mem = process.memoryUsage();
+  console.log(`[heartbeat] alive | rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB | uptime=${Math.round(process.uptime())}s`);
+}, 60_000).unref();
+
 // Register event-driven autonomy triggers (runs without pg-boss)
 registerEventTriggers();
 
