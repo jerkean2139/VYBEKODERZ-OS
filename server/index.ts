@@ -49,9 +49,20 @@ const PORT = process.env.PORT || 3001;
 const DEMO_TENANT = 'vybekoderz-demo';
 const DEMO_PLAN: PlanTier = 'enterprise';
 
-// Prevent unhandled rejections from crashing the server
+// Prevent unhandled errors from crashing the server
 process.on('unhandledRejection', (reason) => {
   console.error('[server] Unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught exception:', err);
+});
+process.on('SIGTERM', () => {
+  console.log('[server] Received SIGTERM — shutting down gracefully');
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  console.log('[server] Received SIGINT — shutting down');
+  process.exit(0);
 });
 
 // ============================================================
@@ -108,6 +119,22 @@ app.get('/api/events', (_req, res) => {
   res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
   sseClients.add(res);
   _req.on('close', () => sseClients.delete(res));
+});
+
+// ============================================================
+// HEALTH — detailed diagnostics
+// ============================================================
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    port: PORT,
+    nodeVersion: process.version,
+    pid: process.pid,
+    env: process.env.NODE_ENV || 'development',
+  });
 });
 
 // ============================================================
@@ -1019,8 +1046,21 @@ app.get('/api/metrics', (_req, res) => {
 // SPA FALLBACK — serve index.html for all non-API routes
 // ============================================================
 
+const indexPath = path.join(distPath, 'index.html');
+
 app.get('/{*splat}', (_req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
+  res.sendFile(indexPath, (err) => {
+    if (err) {
+      console.error('[server] sendFile error:', err);
+      res.status(500).send('Server error');
+    }
+  });
+});
+
+// Global error handler — prevents unhandled route errors from crashing Express
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[server] Express error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // ============================================================
@@ -1028,7 +1068,8 @@ app.get('/{*splat}', (_req, res) => {
 // ============================================================
 
 // Start HTTP server first so healthcheck passes immediately
-app.listen(PORT, () => {
+// Bind to 0.0.0.0 explicitly for Railway container networking
+app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`VybeKoderz Agent OS server running on port ${PORT}`);
   console.log(`  Demo tenant: ${DEMO_TENANT}`);
   console.log(`  Memory engine: ${getMemoryStats(DEMO_TENANT).totalMemories} memories seeded`);
