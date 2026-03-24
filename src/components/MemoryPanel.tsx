@@ -1,139 +1,185 @@
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Brain, Link2, AlertTriangle } from 'lucide-react';
-import { memories, iqScore, type Memory } from '../data/mockData';
-import { useEffect, useState } from 'react';
+import { fetchMemories, fetchMemoryStats, fetchIQScore, type ServerMemory, type MemoryStats, type IQScore } from '../api';
+import { memories as mockMemories, iqMetrics as mockIqMetrics } from '../data/mockData';
 
-const typeConfig: Record<Memory['type'], { color: string; label: string; icon: React.ReactNode }> = {
-  new: { color: 'var(--cyan)', label: 'New Memories', icon: <Brain size={14} /> },
-  connection: { color: 'var(--violet)', label: 'Connections Made', icon: <Link2 size={14} /> },
-  flagged: { color: 'var(--amber)', label: 'Flagged Review', icon: <AlertTriangle size={14} /> },
+const memTypeConfig = {
+  new: { label: 'New Memories (Yesterday)', className: 'text-cyan', itemClass: 'border-l-cyan bg-[var(--cyan-dim)]' },
+  connection: { label: 'Connections Made', className: 'text-violet', itemClass: 'border-l-violet bg-[var(--violet-dim)]' },
+  flagged: { label: 'Flagged for Review', className: 'text-amber', itemClass: 'border-l-amber bg-[var(--amber-dim)]' },
 };
 
-function AnimatedCounter({ target }: { target: number }) {
-  const [count, setCount] = useState(0);
+const tabs = ['Memory', 'IQ Score', 'Log'] as const;
 
-  useEffect(() => {
-    const duration = 1500;
-    const steps = 30;
-    const increment = target / steps;
-    let current = 0;
-    const timer = setInterval(() => {
-      current += increment;
-      if (current >= target) {
-        setCount(target);
-        clearInterval(timer);
-      } else {
-        setCount(Math.floor(current));
-      }
-    }, duration / steps);
-    return () => clearInterval(timer);
-  }, [target]);
-
-  return <span>{count}</span>;
+interface MemoryPanelProps {
+  isConnected?: boolean;
 }
 
-export default function MemoryPanel() {
-  const groupedMemories = {
-    new: memories.filter((m) => m.type === 'new'),
-    connection: memories.filter((m) => m.type === 'connection'),
-    flagged: memories.filter((m) => m.type === 'flagged'),
-  };
+export default function MemoryPanel({ isConnected = false }: MemoryPanelProps) {
+  const [activeTab, setActiveTab] = useState<typeof tabs[number]>('Memory');
+  const [liveMemories, setLiveMemories] = useState<ServerMemory[]>([]);
+  const [liveStats, setLiveStats] = useState<MemoryStats | null>(null);
+  const [liveIQ, setLiveIQ] = useState<IQScore | null>(null);
 
-  const memoryHealth = 82;
+  useEffect(() => {
+    if (!isConnected) return;
+    fetchMemories().then(setLiveMemories).catch(() => {});
+    fetchMemoryStats().then(setLiveStats).catch(() => {});
+    fetchIQScore().then(setLiveIQ).catch(() => {});
+  }, [isConnected]);
+
+  // Map live memories into display groups
+  const newMems = isConnected
+    ? liveMemories.filter(m => m.type === 'episodic' || m.type === 'semantic').slice(0, 5)
+    : mockMemories.filter(m => m.type === 'new');
+  const connectionMems = isConnected
+    ? liveMemories.filter(m => m.type === 'relational').slice(0, 5)
+    : mockMemories.filter(m => m.type === 'connection');
+  const flaggedMems = isConnected
+    ? liveMemories.filter(m => m.confidence < 0.75).slice(0, 5)
+    : mockMemories.filter(m => m.type === 'flagged');
+
+  // IQ data
+  const iqScore = liveIQ?.totalScore ?? 84;
+  const iqLevel = liveIQ?.level ?? 'Master';
+  const iqDelta = liveIQ?.delta ?? 3;
+  const iqMetrics = liveIQ
+    ? [
+      { label: 'Client Knowledge', value: liveIQ.clientKnowledge },
+      { label: 'Process Mastery', value: liveIQ.processMastery },
+      { label: 'Relational Intel', value: liveIQ.relationalIntel, color: '#00D4FF' },
+      { label: 'Predictive Accuracy', value: liveIQ.predictiveAccuracy, color: '#FFD93D' },
+      { label: 'Error Learning', value: liveIQ.errorLearning },
+    ]
+    : mockIqMetrics;
+
+  // Stats
+  const stats = liveStats ?? { totalMemories: 1247, confidenceAvg: 87, connectionCount: 43, predictiveTriggers: 7 };
 
   return (
-    <div
-      className="flex flex-col h-full overflow-y-auto"
-      style={{
-        width: 320,
-        minWidth: 320,
-        background: 'var(--bg-surface)',
-        borderLeft: '1px solid var(--border-subtle)',
-        fontFamily: 'var(--font-mono)',
-      }}
-    >
-      {/* Header */}
-      <div className="p-4 pb-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <h2 className="text-xs font-medium tracking-widest uppercase mb-0.5" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-secondary)' }}>
-          Context Inspector
-        </h2>
+    <aside className="w-[320px] bg-bg-surface-1 border-l border-border-default flex flex-col overflow-hidden shrink-0">
+      {/* Tabs */}
+      <div className="flex border-b border-border-default">
+        {tabs.map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`flex-1 py-2.5 px-2 font-body text-[10px] tracking-wide uppercase text-center cursor-pointer border-b-2 transition-colors duration-200
+              ${activeTab === tab ? 'text-cyan border-b-cyan' : 'text-text-muted border-b-transparent'}`}
+          >
+            {tab}
+          </button>
+        ))}
       </div>
 
-      {/* IQ Score */}
-      <div className="p-4" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <div className="flex items-baseline justify-between mb-1">
-          <span className="text-xs uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>IQ Score</span>
-          <div className="flex items-center gap-1">
-            <motion.span
-              className="text-2xl font-bold"
-              style={{ color: 'var(--cyan)', fontFamily: 'var(--font-display)' }}
-            >
-              <AnimatedCounter target={iqScore.current} />
-            </motion.span>
-            <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: 'var(--mint-dim, rgba(0,255,156,0.15))', color: 'var(--mint)' }}>
-              +{iqScore.weeklyDelta}
-            </span>
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+        {/* IQ Score Panel */}
+        <div className="bg-bg-surface-2 border border-border-default rounded-lg p-3.5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <motion.div
+                className="font-display text-[32px] font-bold text-mint leading-none"
+                key={iqScore}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5 }}
+              >
+                {iqScore}
+              </motion.div>
+              <div className="font-body text-[10px] text-mint tracking-wide uppercase">{iqLevel} Level</div>
+            </div>
+            <div className="font-body text-[10px] text-text-muted text-right">
+              {iqDelta > 0 ? '↑' : iqDelta < 0 ? '↓' : '→'} {iqDelta > 0 ? '+' : ''}{iqDelta} this week<br />
+              <span className="text-text-muted">Next test Mar 28</span>
+            </div>
+          </div>
+
+          {iqMetrics.map((metric, i) => (
+            <div key={metric.label} className={i < iqMetrics.length - 1 ? 'mb-2' : ''}>
+              <div className="flex justify-between font-body text-[10px] text-text-muted mb-1">
+                {metric.label} <span className="text-text-secondary">{metric.value}%</span>
+              </div>
+              <div className="h-[3px] bg-border-default rounded-sm overflow-hidden">
+                <motion.div
+                  className="h-full rounded-sm"
+                  style={{ background: metric.color || '#00FF9C' }}
+                  initial={{ width: 0 }}
+                  animate={{ width: `${metric.value}%` }}
+                  transition={{ duration: 1, ease: 'easeOut', delay: 0.3 + i * 0.15 }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Memory Report */}
+        <div className="bg-bg-surface-2 border border-border-default rounded-lg p-3.5">
+          <div className="font-display text-[11px] font-semibold tracking-wider uppercase text-text-muted mb-3">
+            Today's Memory Report
+          </div>
+
+          {/* New */}
+          <div className="mb-2.5">
+            <div className={`font-body text-[9px] tracking-wider uppercase mb-1.5 flex items-center gap-1.5 ${memTypeConfig.new.className}`}>
+              New Memories (Yesterday)
+            </div>
+            {newMems.map((mem, i) => (
+              <div key={i} className={`font-body text-[10px] text-text-secondary px-2 py-1.5 border-l-2 mb-1 leading-relaxed ${memTypeConfig.new.itemClass}`}>
+                {'text' in mem ? mem.text : mem.content}
+              </div>
+            ))}
+          </div>
+
+          {/* Connections */}
+          <div className="mb-2.5">
+            <div className={`font-body text-[9px] tracking-wider uppercase mb-1.5 flex items-center gap-1.5 ${memTypeConfig.connection.className}`}>
+              Connections Made
+            </div>
+            {connectionMems.map((mem, i) => (
+              <div key={i} className={`font-body text-[10px] text-text-secondary px-2 py-1.5 border-l-2 mb-1 leading-relaxed ${memTypeConfig.connection.itemClass}`}>
+                {'text' in mem ? mem.text : mem.content}
+              </div>
+            ))}
+          </div>
+
+          {/* Flagged */}
+          <div>
+            <div className={`font-body text-[9px] tracking-wider uppercase mb-1.5 flex items-center gap-1.5 ${memTypeConfig.flagged.className}`}>
+              Flagged for Review
+            </div>
+            {flaggedMems.map((mem, i) => (
+              <div key={i} className={`font-body text-[10px] text-text-secondary px-2 py-1.5 border-l-2 mb-1 leading-relaxed ${memTypeConfig.flagged.itemClass}`}>
+                {'text' in mem ? mem.text : mem.content}
+              </div>
+            ))}
           </div>
         </div>
-        <div className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
-          {iqScore.level} Level
-        </div>
-      </div>
 
-      {/* Memory Health */}
-      <div className="px-4 py-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-        <div className="flex justify-between items-center mb-2">
-          <span className="text-xs uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Memory Health</span>
-          <span className="text-xs" style={{ color: 'var(--mint)' }}>{memoryHealth}%</span>
-        </div>
-        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
-          <motion.div
-            className="h-full rounded-full"
-            style={{ background: 'linear-gradient(90deg, var(--cyan), var(--mint))' }}
-            initial={{ width: 0 }}
-            animate={{ width: `${memoryHealth}%` }}
-            transition={{ duration: 1.2, ease: 'easeOut' }}
-          />
-        </div>
-      </div>
-
-      {/* Memory Sections */}
-      <div className="flex-1 overflow-y-auto">
-        {(['new', 'connection', 'flagged'] as const).map((type) => {
-          const config = typeConfig[type];
-          const items = groupedMemories[type];
-          if (items.length === 0) return null;
-          return (
-            <div key={type} className="px-4 py-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-              <div className="flex items-center gap-1.5 mb-2">
-                <span style={{ color: config.color }}>{config.icon}</span>
-                <span className="text-xs uppercase tracking-wider" style={{ color: config.color }}>
-                  {config.label}
-                </span>
-              </div>
-              {items.map((memory) => (
-                <motion.div
-                  key={memory.id}
-                  className="mb-2 p-2 rounded-md text-xs leading-relaxed"
-                  style={{
-                    background: 'var(--bg-elevated)',
-                    color: 'var(--text-primary)',
-                    borderLeft: `2px solid ${config.color}`,
-                  }}
-                  initial={{ opacity: 0, x: 10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <div>{memory.text}</div>
-                  <div className="mt-1" style={{ color: 'var(--text-muted)', fontSize: '10px' }}>
-                    {memory.timestamp}
-                  </div>
-                </motion.div>
-              ))}
+        {/* Memory Health */}
+        <div className="bg-bg-surface-2 border border-border-default rounded-lg p-3.5">
+          <div className="font-display text-[11px] font-semibold tracking-wider uppercase text-text-muted mb-3">
+            Memory Health
+          </div>
+          {[
+            { label: 'Total Memories', value: stats.totalMemories.toLocaleString(), color: '' },
+            { label: 'Confidence Avg', value: `${stats.confidenceAvg}%`, color: 'text-mint' },
+            { label: 'Connections Mapped', value: String(stats.connectionCount), color: '' },
+            { label: 'Predictive Triggers', value: `${stats.predictiveTriggers} active`, color: 'text-violet' },
+            { label: 'Memory Scope', value: 'VybeKoderz', color: '' },
+          ].map((stat, i, arr) => (
+            <div
+              key={stat.label}
+              className={`flex justify-between font-body text-[10px] text-text-muted py-1.5 ${
+                i < arr.length - 1 ? 'mb-1.5 pb-1.5 border-b border-border-default' : ''
+              }`}
+            >
+              {stat.label}
+              <span className={stat.color || 'text-text-primary'}>{stat.value}</span>
             </div>
-          );
-        })}
+          ))}
+        </div>
       </div>
-    </div>
+    </aside>
   );
 }
