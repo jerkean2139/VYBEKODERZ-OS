@@ -8,6 +8,7 @@ import { addNotification } from '../notifications/feed';
 
 // ============================================================
 // Job Workers — process queued jobs with retry logic
+// All handlers wrapped in try/catch to prevent server crashes
 // ============================================================
 
 export async function registerWorkers(boss: PgBoss) {
@@ -18,44 +19,44 @@ export async function registerWorkers(boss: PgBoss) {
 
   // ---- Route Task ----
   await boss.work<RouteTaskJob>(JOB_TYPES.ROUTE_TASK, { teamSize: 5 }, async (job) => {
-    const { taskId, input, tenantId } = job.data;
-    const task = getTask(taskId);
-    if (!task) throw new Error(`Task ${taskId} not found`);
-
     try {
-      const decision = await routeTask(input);
-      routeTaskToAgent(taskId, decision);
+      const { taskId, input, tenantId } = job.data;
+      const task = getTask(taskId);
+      if (!task) { console.error(`[worker] Task ${taskId} not found`); return; }
 
-      addNotification({
-        tenantId,
-        type: 'task_routed',
-        title: 'Task Routed',
-        message: `"${decision.title}" → ${decision.department} → ${decision.specialist}`,
-        agentId: 'donna',
-        taskId,
-      });
-    } catch (error) {
-      // Mark task as error on final failure (pg-boss handles retry)
-      updateTaskStatus(taskId, 'error');
+      try {
+        const decision = await routeTask(input);
+        routeTaskToAgent(taskId, decision);
 
-      addNotification({
-        tenantId,
-        type: 'task_error',
-        title: 'Task Routing Failed',
-        message: `Failed to route: "${input.slice(0, 60)}..."`,
-        agentId: 'donna',
-        taskId,
-      });
-
-      throw error; // Let pg-boss retry
+        addNotification({
+          tenantId,
+          type: 'task_routed',
+          title: 'Task Routed',
+          message: `"${decision.title}" → ${decision.department} → ${decision.specialist}`,
+          agentId: 'donna',
+          taskId,
+        });
+      } catch (error) {
+        updateTaskStatus(taskId, 'error');
+        addNotification({
+          tenantId,
+          type: 'task_error',
+          title: 'Task Routing Failed',
+          message: `Failed to route: "${input.slice(0, 60)}..."`,
+          agentId: 'donna',
+          taskId,
+        });
+        console.error('[worker] Route task failed:', (error as Error).message);
+      }
+    } catch (err) {
+      console.error('[worker] Route task outer error:', (err as Error).message);
     }
   });
 
   // ---- Execute SOP ----
   await boss.work<ExecuteSOPJob>(JOB_TYPES.EXECUTE_SOP, { teamSize: 2 }, async (job) => {
-    const { sessionId, tenantId } = job.data;
-
     try {
+      const { sessionId, tenantId } = job.data;
       const session = await executeSOP(sessionId);
 
       addNotification({
@@ -65,32 +66,39 @@ export async function registerWorkers(boss: PgBoss) {
         message: session.error ?? `Browser session ${sessionId.slice(0, 8)} finished`,
         taskId: session.taskId ?? undefined,
       });
-    } catch (error) {
-      throw error;
+    } catch (err) {
+      console.error('[worker] Execute SOP failed:', (err as Error).message);
     }
   });
 
   // ---- Process Webhook ----
   await boss.work<ProcessWebhookJob>(JOB_TYPES.PROCESS_WEBHOOK, { teamSize: 5 }, async (job) => {
-    const { source, payload, tenantId } = job.data;
+    try {
+      const { source, payload, tenantId } = job.data;
 
-    // Store as context memory
-    storeContext(tenantId, `Webhook received from ${source}: ${JSON.stringify(payload).slice(0, 200)}`, {
-      sourceType: 'webhook',
-      tags: ['webhook', source],
-    });
+      storeContext(tenantId, `Webhook received from ${source}: ${JSON.stringify(payload).slice(0, 200)}`, {
+        sourceType: 'webhook',
+        tags: ['webhook', source],
+      });
 
-    addNotification({
-      tenantId,
-      type: 'webhook_received',
-      title: 'Webhook Received',
-      message: `Event from ${source}`,
-    });
+      addNotification({
+        tenantId,
+        type: 'webhook_received',
+        title: 'Webhook Received',
+        message: `Event from ${source}`,
+      });
+    } catch (err) {
+      console.error('[worker] Process webhook failed:', (err as Error).message);
+    }
   });
 
   // ---- Send Notification ----
   await boss.work<NotificationJob>(JOB_TYPES.SEND_NOTIFICATION, { teamSize: 10 }, async (job) => {
-    addNotification(job.data);
+    try {
+      addNotification(job.data);
+    } catch (err) {
+      console.error('[worker] Send notification failed:', (err as Error).message);
+    }
   });
 
   console.log('  Workers: all job handlers registered');

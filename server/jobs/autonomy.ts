@@ -447,51 +447,71 @@ export async function registerAutonomyJobs(boss: PgBoss) {
   // Memory Consolidation: daily 2AM — ESSENTIAL (runs when throttled)
   await boss.schedule(AUTONOMY_JOBS.MEMORY_CONSOLIDATION, '0 2 * * *', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.MEMORY_CONSOLIDATION, async (job) => {
-    const { tenantId } = job.data as { tenantId: string };
-    if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Memory consolidation: killed'); return; }
-    console.log(`[autonomy] Memory consolidation starting for ${tenantId}`);
-    const result = await consolidateMemories(tenantId);
-    console.log(`[autonomy] Memory consolidation complete:`, result);
+    try {
+      const { tenantId } = job.data as { tenantId: string };
+      if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Memory consolidation: killed'); return; }
+      console.log(`[autonomy] Memory consolidation starting for ${tenantId}`);
+      const result = await consolidateMemories(tenantId);
+      console.log(`[autonomy] Memory consolidation complete:`, result);
+    } catch (err) {
+      console.error('[autonomy] Memory consolidation FAILED:', (err as Error).message);
+    }
   });
 
   // SOP Optimization: daily 3AM — NON-ESSENTIAL (skipped when throttled)
   await boss.schedule(AUTONOMY_JOBS.SOP_OPTIMIZATION, '0 3 * * *', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.SOP_OPTIMIZATION, async (job) => {
-    const { tenantId } = job.data as { tenantId: string };
-    if (!shouldJobRun(tenantId, false)) { console.log('[autonomy] SOP optimization: throttled/killed'); return; }
-    console.log(`[autonomy] SOP optimization starting for ${tenantId}`);
-    const result = await optimizeSOPs(tenantId);
-    console.log(`[autonomy] SOP optimization complete:`, result);
+    try {
+      const { tenantId } = job.data as { tenantId: string };
+      if (!shouldJobRun(tenantId, false)) { console.log('[autonomy] SOP optimization: throttled/killed'); return; }
+      console.log(`[autonomy] SOP optimization starting for ${tenantId}`);
+      const result = await optimizeSOPs(tenantId);
+      console.log(`[autonomy] SOP optimization complete:`, result);
+    } catch (err) {
+      console.error('[autonomy] SOP optimization FAILED:', (err as Error).message);
+    }
   });
 
   // Specialist Detection: daily 4AM — NON-ESSENTIAL
   await boss.schedule(AUTONOMY_JOBS.SPECIALIST_DETECTION, '0 4 * * *', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.SPECIALIST_DETECTION, async (job) => {
-    const { tenantId } = job.data as { tenantId: string };
-    if (!shouldJobRun(tenantId, false)) { console.log('[autonomy] Specialist detection: throttled/killed'); return; }
-    console.log(`[autonomy] Specialist detection starting for ${tenantId}`);
-    const recommendations = await detectSpecialistNeeds(tenantId);
-    console.log(`[autonomy] Specialist detection complete: ${recommendations.length} recommendations`);
+    try {
+      const { tenantId } = job.data as { tenantId: string };
+      if (!shouldJobRun(tenantId, false)) { console.log('[autonomy] Specialist detection: throttled/killed'); return; }
+      console.log(`[autonomy] Specialist detection starting for ${tenantId}`);
+      const recommendations = await detectSpecialistNeeds(tenantId);
+      console.log(`[autonomy] Specialist detection complete: ${recommendations.length} recommendations`);
+    } catch (err) {
+      console.error('[autonomy] Specialist detection FAILED:', (err as Error).message);
+    }
   });
 
   // Daily Report: daily 6AM — ESSENTIAL
   await boss.schedule(AUTONOMY_JOBS.DAILY_INTELLIGENCE_REPORT, '0 6 * * *', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.DAILY_INTELLIGENCE_REPORT, async (job) => {
-    const { tenantId } = job.data as { tenantId: string };
-    if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Daily report: killed'); return; }
-    console.log(`[autonomy] Daily intelligence report starting for ${tenantId}`);
-    const report = await runDailyReport(tenantId);
-    console.log(`[autonomy] Daily report complete: ${report.summary.slice(0, 100)}...`);
+    try {
+      const { tenantId } = job.data as { tenantId: string };
+      if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Daily report: killed'); return; }
+      console.log(`[autonomy] Daily intelligence report starting for ${tenantId}`);
+      const report = await runDailyReport(tenantId);
+      console.log(`[autonomy] Daily report complete: ${report.summary.slice(0, 100)}...`);
+    } catch (err) {
+      console.error('[autonomy] Daily report FAILED:', (err as Error).message);
+    }
   });
 
   // Weekly IQ Assessment: Mondays 7AM — ESSENTIAL
   await boss.schedule(AUTONOMY_JOBS.WEEKLY_IQ_ASSESSMENT, '0 7 * * 1', { tenantId: DEMO_TENANT });
   await boss.work(AUTONOMY_JOBS.WEEKLY_IQ_ASSESSMENT, async (job) => {
-    const { tenantId } = job.data as { tenantId: string };
-    if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Weekly assessment: killed'); return; }
-    console.log(`[autonomy] Weekly IQ assessment starting for ${tenantId}`);
-    const assessment = await runWeeklyAssessment(tenantId);
-    console.log(`[autonomy] Weekly assessment complete: ${assessment.trend} — ${assessment.summary}`);
+    try {
+      const { tenantId } = job.data as { tenantId: string };
+      if (!shouldJobRun(tenantId, true)) { console.log('[autonomy] Weekly assessment: killed'); return; }
+      console.log(`[autonomy] Weekly IQ assessment starting for ${tenantId}`);
+      const assessment = await runWeeklyAssessment(tenantId);
+      console.log(`[autonomy] Weekly assessment complete: ${assessment.trend} — ${assessment.summary}`);
+    } catch (err) {
+      console.error('[autonomy] Weekly assessment FAILED:', (err as Error).message);
+    }
   });
 
   console.log('  Autonomy: 5 scheduled jobs registered (consolidation, SOPs, specialists, report, IQ)');

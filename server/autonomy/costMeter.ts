@@ -180,21 +180,26 @@ export async function meteredClaudeCall(params: {
     return null;
   }
 
-  const message = await getClient().messages.create({
-    model,
-    max_tokens: params.maxTokens ?? 1024,
-    system: params.system,
-    messages: [{ role: 'user', content: params.userMessage }],
-  });
+  try {
+    const message = await getClient().messages.create({
+      model,
+      max_tokens: params.maxTokens ?? 1024,
+      system: params.system,
+      messages: [{ role: 'user', content: params.userMessage }],
+    });
 
-  const text = message.content[0].type === 'text' ? message.content[0].text : '';
-  const metrics = recordAPIUsage({
-    tenantId: params.tenantId,
-    jobType: params.jobType,
-    model,
-    inputTokens: message.usage.input_tokens,
-    outputTokens: message.usage.output_tokens,
-  });
+    const text = message.content[0].type === 'text' ? message.content[0].text : '';
+    const metrics = recordAPIUsage({
+      tenantId: params.tenantId,
+      jobType: params.jobType,
+      model,
+      inputTokens: message.usage.input_tokens,
+      outputTokens: message.usage.output_tokens,
+    });
 
-  return { text, metrics };
+    return { text, metrics };
+  } catch (err) {
+    console.error(`[metering] Claude API call failed (${params.jobType}):`, (err as Error).message);
+    return null;
+  }
 }
