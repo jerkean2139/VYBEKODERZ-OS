@@ -52,7 +52,7 @@ body {
   position: relative;
 }
 
-/* Scanline texture */
+/* Subtle scanline texture — barely visible, adds depth without retro look */
 body::before {
   content: '';
   position: fixed;
@@ -60,9 +60,9 @@ body::before {
   background: repeating-linear-gradient(
     0deg,
     transparent,
-    transparent 2px,
-    rgba(255, 255, 255, 0.015) 2px,
-    rgba(255, 255, 255, 0.015) 4px
+    transparent 4px,
+    rgba(255, 255, 255, 0.008) 4px,
+    rgba(255, 255, 255, 0.008) 8px
   );
   pointer-events: none;
   z-index: 1000;
